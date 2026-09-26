@@ -1,0 +1,30 @@
+name: Football Bot FREE
+
+on:
+  schedule:
+    - cron: '*/3 * * * *'
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - run: pip install requests playwright
+      - run: playwright install chromium
+      - name: Run bot
+        env:
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+          X_USERNAME: ${{ secrets.X_USERNAME }}
+          X_PASSWORD: ${{ secrets.X_PASSWORD }}
+        run: python bot.py
+      - name: Save state
+        run: |
+          git config --global user.name "bot"
+          git config --global user.email "bot@bot.com"
+          git add state.json auth.json || true
+          git commit -m "update state" || true
+          git push || true

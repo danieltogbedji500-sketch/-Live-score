@@ -27,8 +27,7 @@ def load_state():
     try:
         with open(STATE_FILE, "r") as f:
             data = json.load(f)
-            # merge with default to fix KeyError
-            for k,v in default.items():
+            for k, v in default.items():
                 if k not in data:
                     data[k] = v
             return data
@@ -36,20 +35,22 @@ def load_state():
         return default
 
 def save_state(s):
-    with open(STATE_FILE, "w") as f: json.dump(s, f)
+    with open(STATE_FILE, "w") as f:
+        json.dump(s, f)
 
 def can_post(state):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if state.get("daily_date", "")!= today:
-        print(f"New day {today}, clearing old data")
         state["posted_ids"] = []
         state["daily_count"] = 0
         state["daily_date"] = today
         save_state(state)
-    if state["daily_count"] >= 25: return False
+    if state["daily_count"] >= 25:
+        return False
     if state["last_post_time"]:
         last = datetime.fromisoformat(state["last_post_time"])
-        if (datetime.now(timezone.utc) - last).total_seconds() / 60 < 5: return False
+        if (datetime.now(timezone.utc) - last).total_seconds() / 60 < 5:
+            return False
     return True
 
 def post_to_x(message):
@@ -61,7 +62,7 @@ def post_to_x(message):
     if not username or not password:
         print(message)
         return True
-    print(f"Trying to post to X as {username}...")
+    print(f"Trying to post as {username}")
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -69,7 +70,8 @@ def post_to_x(message):
             if os.path.exists("auth.json"):
                 try:
                     context = browser.new_context(storage_state="auth.json")
-                except: pass
+                except:
+                    pass
             page = context.new_page()
             page.goto("https://x.com/login", timeout=60000)
             time.sleep(3)
@@ -103,14 +105,19 @@ def post_to_x(message):
 
 def main():
     state = load_state()
-    if not can_post(state): return
+    if not can_post(state):
+        print("Cannot post now (cooldown or limit)")
+        return
     headers = {"x-apisports-key": API_KEY}
     try:
         resp = requests.get(f"https://{API_HOST}/fixtures?live=all", headers=headers, timeout=20).json()
     except Exception as e:
-        print(f"API error: {e}"); return
+        print(f"API error: {e}")
+        return
+
     for fixture in resp.get("response", []):
-        if fixture["teams"]["home"]["id"] not in TEAM_IDS and fixture["teams"]["away"]["id"] not in TEAM_IDS: continue
+        if fixture["teams"]["home"]["id"] not in TEAM_IDS and fixture["teams"]["away"]["id"] not in TEAM_IDS:
+            continue
         fid = fixture["fixture"]["id"]
         sh = fixture["goals"]["home"] or 0
         sa = fixture["goals"]["away"] or 0
@@ -118,18 +125,23 @@ def main():
         an = fixture["teams"]["away"]["name"]
         status = fixture["fixture"]["status"]["short"]
         cur = fixture["fixture"]["status"]["elapsed"] or 0
+
         try:
             ev_url = f"https://{API_HOST}/fixtures/events?fixture={fid}"
             events = requests.get(ev_url, headers=headers, timeout=20).json().get("response", [])
-        except: events = []
+        except:
+            events = []
+
         for ev in events:
             et = ev["time"]["elapsed"]
-            if et is None: continue
+            if et is None:
+                continue
             eid = f"{fid}-{et}-{ev['player']['id']}-{ev['type']}-{ev['detail']}"
-            if eid in state["posted_ids"]: continue
+            if eid in state["posted_ids"]:
+                continue
             if cur - et > 10:
-                print(f"Skip old {et}' now {cur}'")
-                state["posted_ids"].append(eid); continue
+                state["posted_ids"].append(eid)
+                continue
             msg = None
             if ev["type"] == "Goal":
                 scorer = ev["player"]["name"]
@@ -140,10 +152,26 @@ def main():
                     msg = f"🚨 GOAL! {et}'\n{hn} {sh}-{sa} {an}\n⚽️ {scorer}"
             elif ev["type"] == "Card" and "Red" in ev["detail"]:
                 msg = f"🟥 RED CARD! {et}'\n{hn} {sh}-{sa} {an}\nPlayer: {ev['player']['name']} ({ev['team']['name']})"
+
             if msg and post_to_x(msg):
                 state["posted_ids"].append(eid)
                 state["last_post_time"] = datetime.now(timezone.utc).isoformat()
                 state["daily_count"] += 1
                 save_state(state)
                 return
+
         if status == "FT":
+            ft_id = f"{fid}-FT"
+            if ft_id not in state["posted_ids"]:
+                msg = f"⏱️ FULL TIME!\n{hn} {sh}-{sa} {an}"
+                if post_to_x(msg):
+                    state["posted_ids"].append(ft_id)
+                    state["last_post_time"] = datetime.now(timezone.utc).isoformat()
+                    state["daily_count"] += 1
+                    save_state(state)
+                    return
+
+    save_state(state)
+
+if __name__ == "__main__":
+    main()

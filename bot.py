@@ -1,4 +1,4 @@
-# Ballpoint X Bot v5.5 FIXED - SYNTAX ERROR FIXED
+# Ballpoint X Bot v5.6 FINAL - LIVE + TODAY check
 import os, json, requests
 from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright
@@ -40,12 +40,6 @@ def format_halftime(th, ta, sh, sa):
 def format_fulltime(th, ta, sh, sa):
     return f"FT:\n\n{th} {sh}-{sa} {ta}\nWhat a game! Thoughts?\n\n{TAG}"
 
-def format_40(th, ta):
-    return f"40 min - Still goalless!\n\n{th} 0-0 {ta}\nTENSE... who breaks deadlock?\n\n{TAG}"
-
-def format_80(th, ta):
-    return f"80 min - STILL 0-0!\n\n{th} vs {ta} is CRAZY!\nLate winner coming?\n\n{TAG}"
-
 def format_red_card(th, ta, sh, sa, player, minute):
     m = str(minute) + "'"
     return f"RED CARD!\n\n{th} {sh}-{sa} {ta}\n{player} {m} - Sent off!\n\n{TAG}"
@@ -81,63 +75,56 @@ def post_tweet(text):
         print("Posted!")
 
 def main():
-    print("Ballpoint Bot v5.5 FIXED starting")
+    print("Ballpoint Bot v5.6 FINAL starting")
     if not os.path.exists(STATE_FILE):
         with open(STATE_FILE, 'w') as f:
             json.dump({}, f)
     with open(STATE_FILE, 'r') as f:
         posted = json.load(f)
+
     headers = {"x-apisports-key": API_KEY}
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    resp = requests.get(f"https://v3.football.api-sports.io/fixtures?date={today}", headers=headers)
-    all_today = resp.json().get('response', [])
-    print(f"API returned {len(all_today)} fixtures")
+    print(f"Date UTC: {today}")
+
+    all_fixtures = []
+    seen_ids = set()
+
+    # 1. Check TODAY
+    try:
+        r1 = requests.get(f"https://v3.football.api-sports.io/fixtures?date={today}", headers=headers)
+        j1 = r1.json()
+        print(f"TODAY API: {j1.get('results')} fixtures, errors: {j1.get('errors')}")
+        for fix in j1.get('response', []):
+            fid = fix['fixture']['id']
+            if fid not in seen_ids:
+                all_fixtures.append(fix)
+                seen_ids.add(fid)
+    except Exception as e:
+        print(f"Error today: {e}")
+
+    # 2. Check LIVE (crucial to avoid 0)
+    try:
+        r2 = requests.get(f"https://v3.football.api-sports.io/fixtures?live=all", headers=headers)
+        j2 = r2.json()
+        print(f"LIVE API: {j2.get('results')} fixtures")
+        for fix in j2.get('response', []):
+            fid = fix['fixture']['id']
+            if fid not in seen_ids:
+                all_fixtures.append(fix)
+                seen_ids.add(fid)
+    except Exception as e:
+        print(f"Error live: {e}")
+
+    print(f"Combined unique fixtures: {len(all_fixtures)}")
+
     targets = []
-    for fix in all_today:
+    for fix in all_fixtures:
         home = fix['teams']['home']['name']
         away = fix['teams']['away']['name']
         for team in ALL_TEAMS:
             if team.lower() in home.lower() or team.lower() in away.lower():
                 status = fix['fixture']['status']['short']
                 if status not in ['FT','AET','PEN','CANC','PST','ABD','AWD']:
-                    if fix not in targets:
-                        targets.append(fix)
-                        print(f"-> TARGET: {home} vs {away} [{status}]")
+                    targets.append(fix)
+                    print(f"-> TARGET: {home} vs {away} [{status}] {fix['goals']['home']}-{fix['goals']['away']}")
                 break
-    print(f"Total: {len(targets)} matches")
-    for fix in targets:
-        home = fix['teams']['home']['name']
-        away = fix['teams']['away']['name']
-        fid = str(fix['fixture']['id'])
-        status = fix['fixture']['status']['short']
-        elapsed = fix['fixture']['status']['elapsed'] or 0
-        sh = fix['goals']['home']
-        sa = fix['goals']['away']
-        if status in ["1H","HT","2H"] and elapsed <= 5 and f"{fid}_kick" not in posted:
-            post_tweet(format_kickoff(home, away))
-            posted[f"{fid}_kick"] = True
-        ev_resp = requests.get(f"https://v3.football.api-sports.io/fixtures/events?fixture={fid}", headers=headers).json()
-        for ev in ev_resp.get('response', []):
-            if ev['type'] == 'Goal':
-                key = f"{fid}_{ev['time']['elapsed']}_{ev['player']['name']}"
-                if key not in posted:
-                    assist = ev['assist']['name'] if ev['assist']['name'] else None
-                    post_tweet(format_goal(home, away, sh, sa, ev['player']['name'], ev['time']['elapsed'], assist))
-                    posted[key] = True
-            if ev['type'] == 'Card' and 'Red' in ev['detail']:
-                key = f"{fid}_red_{ev['player']['name']}"
-                if key not in posted:
-                    post_tweet(format_red_card(home, away, sh, sa, ev['player']['name'], ev['time']['elapsed']))
-                    posted[key] = True
-        if status == "HT" and f"{fid}_ht" not in posted:
-            post_tweet(format_halftime(home, away, sh, sa))
-            posted[f"{fid}_ht"] = True
-        if status in ["FT","AET","PEN"] and f"{fid}_ft" not in posted:
-            post_tweet(format_fulltime(home, away, sh, sa))
-            posted[f"{fid}_ft"] = True
-    with open(STATE_FILE, 'w') as f:
-        json.dump(posted, f)
-    print("Done.")
-
-if __name__ == "__main__":
-    main()

@@ -1,12 +1,11 @@
-name: Football Bot FREE
-
+name: run-bot
 on:
   schedule:
     - cron: '*/3 * * * *'
   workflow_dispatch:
 
 jobs:
-  run-bot:
+  bot:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -20,11 +19,13 @@ jobs:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           X_USERNAME: ${{ secrets.X_USERNAME }}
           X_PASSWORD: ${{ secrets.X_PASSWORD }}
-        run: python bot.py
-      - name: Save state
         run: |
-          git config --global user.name "bot"
-          git config --global user.email "bot@bot.com"
-          git add state.json auth.json || true
-          git commit -m "update state" || true
-          git push || true
+          ls -lh
+          wc -l bot.py
+          python -u bot.py
+      - uses: actions/upload-artifact@v3
+        with:
+          name: state
+          path: |
+            state.json
+            auth.json

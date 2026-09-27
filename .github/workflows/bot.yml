@@ -1,31 +1,25 @@
-name: run-bot
+name: bot
 on:
   schedule:
-    - cron: '*/3 * * * *'
+    - cron: '*/2 * * * *'
   workflow_dispatch:
 
 jobs:
-  bot:
+  run:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
       - run: pip install requests playwright
-      - run: playwright install chromium
+      - run: playwright install chromium --with-deps
       - name: Run bot
         env:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           X_USERNAME: ${{ secrets.X_USERNAME }}
           X_PASSWORD: ${{ secrets.X_PASSWORD }}
         run: |
-          ls -lh
+          echo "--- bot.py size ---"
           wc -l bot.py
           python -u bot.py
-      - uses: actions/upload-artifact@v3
-        with:
-          name: state
-          path: |
-            state.json
-            auth.json

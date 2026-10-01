@@ -1,55 +1,51 @@
-# Ballpoint X Bot v5.7 MINIMAL
-import os, json, requests, sys
-from datetime import datetime, timezone
-print("Ballpoint Bot v5.7 starting", flush=True)
+import os, json, requests, time
+from datetime import datetime
 
 API_KEY = os.getenv("API_FOOTBALL_KEY")
-X_USER = os.getenv("X_USERNAME")
-X_PASS = os.getenv("X_PASSWORD")
-
 STATE_FILE = "state.json"
-TEAMS = ["Spain","Germany","Portugal","France","England","Italy","Netherlands","Belgium","Real Madrid","Barcelona","Atletico","Villarreal","Arsenal","Man City","Manchester City","Liverpool","Chelsea","Man Utd","Manchester United","Newcastle","Tottenham","Aston Villa","Bayern","Inter","PSG","Marseille"]
 
-if not API_KEY:
-    print("ERROR: API_FOOTBALL_KEY missing!", flush=True)
-    sys.exit(1)
-
-if not os.path.exists(STATE_FILE):
-    with open(STATE_FILE, 'w') as f: json.dump({}, f)
-with open(STATE_FILE, 'r') as f: posted = json.load(f)
-
-today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-print(f"Date UTC: {today}", flush=True)
+# Your popular teams filter - edit this list
+POPULAR_TEAMS = ["Real Madrid","Barcelona","Manchester City","Arsenal","Liverpool","Man United","Chelsea","PSG","Bayern Munich","Inter"]
 
 headers = {"x-apisports-key": API_KEY}
-all_fixtures = []
-seen = set()
 
-for mode in [f"date={today}", "live=all"]:
+def get_live():
+    url = "https://v3.football.api-sports.io/fixtures?live=all"
+    r = requests.get(url, headers=headers, timeout=20)
+    print(r.text[:500]) # for debug
+    data = r.json()
+    return data.get("response", [])
+
+def load_state():
     try:
-        url = f"https://v3.football.api-sports.io/fixtures?{mode}"
-        r = requests.get(url, headers=headers, timeout=15)
-        j = r.json()
-        print(f"API {mode}: {j.get('results')} results errors={j.get('errors')}", flush=True)
-        for fx in j.get('response', []):
-            fid = fx['fixture']['id']
-            if fid not in seen:
-                all_fixtures.append(fx)
-                seen.add(fid)
-    except Exception as e:
-        print(f"Error {mode}: {e}", flush=True)
+        with open(STATE_FILE) as f: return json.load(f)
+    except: return {}
 
-print(f"Combined: {len(all_fixtures)}", flush=True)
+def save_state(s):
+    with open(STATE_FILE,"w") as f: json.dump(s,f)
 
-targets = []
-for fx in all_fixtures:
-    h = fx['teams']['home']['name']
-    a = fx['teams']['away']['name']
-    stat = fx['fixture']['status']['short']
-    if any(t.lower() in h.lower() or t.lower() in a.lower() for t in TEAMS):
-        if stat not in ['FT','AET','PEN','CANC','PST','ABD']:
-            targets.append(fx)
-            print(f"TARGET: {h} vs {a} [{stat}] {fx['goals']['home']}-{fx['goals']['away']}", flush=True)
+# --- main ---
+live_games = get_live()
+print(f"Live games found: {len(live_games)}")
+state = load_state()
 
-print(f"Total for YOUR teams: {len(targets)}", flush=True)
-print("Done - bot logic OK, no tweet in this test version", flush=True)
+for game in live_games:
+    fid = str(game["fixture"]["id"])
+    home = game["teams"]["home"]["name"]
+    away = game["teams"]["away"]["name"]
+    if not any(t in [home,away] for t in POPULAR_TEAMS): continue
+
+    goals_home = game["goals"]["home"]
+    goals_away = game["goals"]["away"]
+    minute = game["fixture"]["status"]["elapsed"]
+    score_key = f"{goals_home}-{goals_away}"
+
+    last_score = state.get(fid)
+    if last_score!= score_key:
+        text = f"⚽️ {minute}' GOAL! {home} {goals_home}-{goals_away} {away}"
+        print(f"NEW: {text}")
+        # --- post to X here (Playwright part stays same as your old bot) ---
+        # If you use API, call it here
+        state[fid] = score_key
+
+save_state(state)

@@ -2,6 +2,13 @@ import os, json, requests
 from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright
 
+# FIX FOR CLOUDFLARE BLOCK - FotMob blocks GitHub IPs
+try:
+    import cloudscraper
+    scraper = cloudscraper.create_scraper()
+except:
+    scraper = requests
+
 # FotMob needs no key
 X_USER=os.getenv("X_USER")
 X_PASS=os.getenv("X_PASS")
@@ -86,12 +93,16 @@ def main():
     print("Ballpoint v6.0 FOTMOB mode starting")
     posted=load_state()
 
-    # FOTMOB - No key needed
+    # FOTMOB - No key needed - FIXED HEADERS
     today=datetime.now(timezone.utc).strftime("%Y%m%d")
-    headers={"User-Agent":"Mozilla/5.0"}
+    headers={
+        "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept":"application/json",
+        "Referer":"https://www.fotmob.com/"
+    }
 
     try:
-        r=requests.get(f"https://www.fotmob.com/api/matches?date={today}",headers=headers,timeout=20)
+        r=scraper.get(f"https://www.fotmob.com/api/matches?date={today}",headers=headers,timeout=20)
         data=r.json()
     except Exception as e:
         print(f"FOTMOB fetch failed: {e}")
@@ -103,25 +114,20 @@ def main():
     targets=[]
     for lg in leagues:
         for m in lg.get("matches",[]):
-            # FotMob structure
             home=m.get("home",{}).get("name","")
             away=m.get("away",{}).get("name","")
             mid=str(m.get("id"))
             status_obj=m.get("status",{})
-            # live check
             started=status_obj.get("started",False)
             finished=status_obj.get("finished",False)
             live=status_obj.get("liveTime") is not None or (started and not finished)
-            reason=status_obj.get("reason",{}).get("short","") # HT, FT etc
+            reason=status_obj.get("reason",{}).get("short","")
 
-            # Parse score - FotMob puts in home/away score
             sh=m.get("home",{}).get("score",0)
             sa=m.get("away",{}).get("score",0)
-            # sometimes score is in status
             if sh is None: sh=0
             if sa is None: sa=0
 
-            # liveTime like 45', 90+2'
             live_str=status_obj.get("liveTime",{}).get("short","") if status_obj.get("liveTime") else ""
             elapsed=0
             try:
@@ -129,8 +135,7 @@ def main():
                     elapsed=int(''.join(filter(str.isdigit, live_str.split('+')[0])) or 0)
             except: elapsed=0
 
-            if not live and reason not in ["HT"]: # keep HT as live for halftime tweet
-                # also allow recently finished for FT tweet
+            if not live and reason not in ["HT"]:
                 if reason!="FT":
                     continue
 
@@ -162,12 +167,10 @@ def main():
         prev_score=posted.get(f"{fid}_score","x-x")
         curr_score=f"{sh}-{sa}"
 
-        # Kickoff
         if f["started"] and elapsed<=5 and f"{fid}_kick" not in posted:
             try: post_tweet(format_kickoff(home,away)); posted[f"{fid}_kick"]=True
             except Exception as e: print(e)
 
-        # 40' and 80' checks
         if elapsed>=40 and elapsed<=42 and sh==0 and sa==0 and f"{fid}_40" not in posted:
             try: post_tweet(format_40(home,away)); posted[f"{fid}_40"]=True
             except: pass
@@ -181,31 +184,26 @@ def main():
             try: post_tweet(format_fulltime(home,away,sh,sa)); posted[f"{fid}_ft"]=True
             except: pass
 
-        # Score changed -> fetch details for scorer
         if curr_score!=prev_score or f["started"]:
             print(f"Score {prev_score} -> {curr_score}, fetching matchDetails for {fid}...")
             try:
-                dr=requests.get(f"https://www.fotmob.com/api/matchDetails?matchId={fid}",headers=headers,timeout=20)
+                dr=scraper.get(f"https://www.fotmob.com/api/matchDetails?matchId={fid}",headers=headers,timeout=20)
                 det=dr.json()
-                # FotMob goals are in content -> matchFacts -> events or header -> events
                 events=[]
                 try:
-                    # new structure
                     mf=det.get("content",{}).get("matchFacts",{}).get("events",{}).get("events",[])
                     events=mf
                 except: events=[]
-                # fallback header events
                 if not events:
                     try:
                         events=det.get("header",{}).get("events",{}).get("events",[]) or det.get("content",{}).get("events",{}).get("events",[])
                     except: events=[]
 
                 for ev in events:
-                    ev_type=ev.get("type","") # Goal, Card
+                    ev_type=ev.get("type","")
                     if ev_type=="Goal":
                         minute=ev.get("timeStr","").replace("'","") or ev.get("time",0)
                         player=ev.get("playerName") or ev.get("name","Unknown")
-                        # FotMob doesn't always give assist in this endpoint, but try
                         assist=None
                         if "assist" in str(ev).lower():
                             assist=ev.get("assistStr") or ev.get("assist")
@@ -216,7 +214,6 @@ def main():
                                 posted[key]=True
                             except Exception as e: print(e)
                     if "Card" in ev_type or ev.get("card")=="Red" or "Red" in str(ev.get("type","")):
-                        # FotMob red card
                         if ev.get("card")=="Red" or "red" in str(ev).lower():
                             minute=ev.get("timeStr","").replace("'","") or ev.get("time",0)
                             player=ev.get("playerName","Unknown")

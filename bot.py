@@ -57,92 +57,100 @@ def post_tweet(text):
     print(f"TWEETING: {text[:80]}...")
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
+        has_auth = os.path.exists(AUTH_FILE)
+        print(f"has_auth={has_auth}")
         context = browser.new_context(
-            storage_state=AUTH_FILE if os.path.exists(AUTH_FILE) else None,
+            storage_state=AUTH_FILE if has_auth else None,
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         )
         page = context.new_page()
-        page.goto("https://x.com/compose/tweet", timeout=60000)
-        page.wait_for_load_state("domcontentloaded")
+
+        if not has_auth:
+            print("No auth.json - logging in fresh...")
+            page.goto("https://x.com/i/flow/login", timeout=60000)
+            page.wait_for_timeout(4000)
+            page.locator('input[name="text"], input[data-testid="ocfEnterTextTextInput"]').first.fill(X_USER, timeout=10000)
+            page.wait_for_timeout(1500)
+            page.locator('button:has-text("Next")').first.click()
+            page.wait_for_timeout(4000)
+            try:
+                ci = page.locator('input[data-testid="ocfEnterTextTextInput"]').first
+                if ci.is_visible(timeout=2000) and "phone" in page.content().lower():
+                    ci.fill(X_USER)
+                    page.locator('button:has-text("Next")').first.click()
+                    page.wait_for_timeout(3000)
+            except: pass
+            page.wait_for_selector('input[type="password"]', timeout=15000)
+            page.locator('input[type="password"]').first.fill(X_PASS, timeout=10000)
+            page.wait_for_timeout(1000)
+            page.locator('button[data-testid="ocfEnterTextNextButton"], button:has-text("Log in")').first.click()
+            page.wait_for_load_state("networkidle", timeout=20000)
+            page.wait_for_timeout(5000)
+            context.storage_state(path=AUTH_FILE)
+            print("Saved auth.json")
+
+        page.goto("https://x.com/home", timeout=60000)
+        page.wait_for_load_state("networkidle", timeout=20000)
         page.wait_for_timeout(5000)
 
         if "login" in page.url or "flow" in page.url:
-            print("Auth expired, doing fresh login...")
-            if os.path.exists(AUTH_FILE):
-                os.remove(AUTH_FILE)
+            print("Still on login - retry")
+            if os.path.exists(AUTH_FILE): os.remove(AUTH_FILE)
             browser.close()
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
             page = context.new_page()
             page.goto("https://x.com/i/flow/login", timeout=60000)
-            page.wait_for_load_state("networkidle", timeout=20000)
             page.wait_for_timeout(4000)
-            try:
-                inp = page.locator('input[data-testid="ocfEnterTextTextInput"], input[name="text"]').first
-                inp.fill(X_USER, timeout=10000)
-                page.wait_for_timeout(1000)
-                nxt = page.locator('button[data-testid="ocfEnterTextNextButton"]').first
-                if not nxt.is_visible(timeout=2000):
-                    nxt = page.get_by_role("button", name="Next").first
-                nxt.click()
-                page.wait_for_timeout(4000)
-            except Exception as e:
-                print(f"Username step failed: {e}")
-                raise
-            try:
-                ci = page.locator('input[data-testid="ocfEnterTextTextInput"]').first
-                if ci.is_visible(timeout=3000) and "phone" in page.content().lower():
-                    ci.fill(X_USER)
-                    page.get_by_role("button", name="Next").first.click()
-                    page.wait_for_timeout(3000)
-            except: pass
-            try:
-                page.wait_for_selector('input[type="password"]', timeout=15000)
-                page.locator('input[type="password"]').first.fill(X_PASS, timeout=10000)
-                page.wait_for_timeout(1000)
-                lb = page.locator('button[data-testid="ocfEnterTextNextButton"]').first
-                if not lb.is_visible(timeout=2000):
-                    lb = page.get_by_role("button", name="Log in").first
-                lb.click()
-                page.wait_for_load_state("networkidle", timeout=20000)
-                page.wait_for_timeout(5000)
-                context.storage_state(path=AUTH_FILE)
-                print("Saved new auth.json")
-            except Exception as e:
-                print(f"Password step failed: {e}")
-                raise
-            page.goto("https://x.com/compose/tweet", timeout=60000)
-            page.wait_for_load_state("domcontentloaded")
+            page.locator('input[name="text"], input[data-testid="ocfEnterTextTextInput"]').first.fill(X_USER, timeout=10000)
+            page.wait_for_timeout(1000)
+            page.locator('button:has-text("Next")').first.click()
+            page.wait_for_timeout(4000)
+            page.wait_for_selector('input[type="password"]', timeout=15000)
+            page.locator('input[type="password"]').first.fill(X_PASS)
+            page.locator('button:has-text("Log in")').first.click()
+            page.wait_for_timeout(8000)
+            context.storage_state(path=AUTH_FILE)
+            page.goto("https://x.com/home", timeout=60000)
             page.wait_for_timeout(5000)
 
-        # --- FIXED SELECTOR WITH RETRY ---
         box = None
-        for _ in range(2):
-            for sel in ['div[role="textbox"]','div[data-testid="tweetTextarea_0"]','div[contenteditable="true"][data-lexical-editor="true"]','div[contenteditable="true"]']:
-                try:
-                    print(f"Trying {sel}")
-                    page.wait_for_selector(sel, timeout=5000)
-                    b = page.locator(sel).first
-                    if b.is_visible(timeout=2000):
-                        box = b
-                        print(f"Found {sel}")
-                        break
-                except: continue
-            if box: break
-            page.reload()
-            page.wait_for_timeout(5000)
+        for sel in ['div[data-testid="tweetTextarea_0"]','div[role="textbox"]','div[contenteditable="true"][data-lexical-editor="true"]']:
+            try:
+                print(f"Trying {sel}")
+                page.wait_for_selector(sel, timeout=8000)
+                b = page.locator(sel).first
+                if b.is_visible(timeout=2000):
+                    box = b
+                    print(f"Found {sel}")
+                    break
+            except: continue
 
         if not box:
-            page.screenshot(path="compose_fail.png")
-            raise Exception("No textbox found")
+            try:
+                post_btn = page.locator('a[href="/compose/tweet"], a[data-testid="SideNav_NewTweet_Button"]').first
+                if post_btn.is_visible(timeout=3000):
+                    post_btn.click()
+                    page.wait_for_timeout(3000)
+                    for sel in ['div[data-testid="tweetTextarea_0"]','div[role="textbox"]']:
+                        try:
+                            page.wait_for_selector(sel, timeout=5000)
+                            box = page.locator(sel).first
+                            if box.is_visible(): break
+                        except: continue
+            except: pass
+
+        if not box:
+            page.screenshot(path="compose_fail.png", full_page=True)
+            print(f"URL: {page.url}")
+            raise Exception(f"No textbox - at {page.url}")
 
         box.click()
-        page.wait_for_timeout(600)
+        page.wait_for_timeout(800)
         page.keyboard.press("Control+A")
         page.keyboard.press("Backspace")
         box.fill(text)
         page.wait_for_timeout(2000)
-
         try:
             page.locator('button[data-testid="tweetButtonInline"]').first.click(timeout=5000)
         except:
@@ -153,7 +161,7 @@ def post_tweet(text):
         page.wait_for_timeout(8000)
         context.storage_state(path=AUTH_FILE)
         browser.close()
-        print("Posted OK")
+        print("Posted OK - auth saved")
 
 def main():
     print("Ballpoint v7.1 FIXED TEXTBOX ONLY")
@@ -201,9 +209,7 @@ def main():
         print("FOTMOB fetch failed: could not parse leagues")
         return
     print(f"FOTMOB: {len(leagues)} leagues today")
-
     candidates = []
-
     for lg in leagues:
         for m in lg.get("matches",[]):
             home=m.get("home",{}).get("name","")
@@ -228,7 +234,6 @@ def main():
                 continue
             if not is_my_team(home) and not is_my_team(away):
                 continue
-
             def add_candidate(txt, key):
                 fk = f"{key}_first_seen"
                 if key in posted:
@@ -246,7 +251,6 @@ def main():
                             posted[key] = True
                     except:
                         candidates.append((now, txt, key))
-
             is_live = started and not finished and reason!="FT"
             if is_live and elapsed<=5:
                 add_candidate(format_kickoff(home,away), f"{mid}_kick")
@@ -258,7 +262,6 @@ def main():
                 add_candidate(format_halftime(home,away,sh,sa), f"{mid}_ht")
             if reason=="FT":
                 add_candidate(format_fulltime(home,away,sh,sa), f"{mid}_ft")
-
             if live or reason=="FT":
                 try:
                     det=None
@@ -316,16 +319,13 @@ def main():
                                 add_candidate(format_red(home,away,sh,sa,player,minute), key)
                 except Exception as e:
                     print(f"Details failed for {mid}: {e}")
-
     if not candidates:
         print("No new events within 15min window")
         save_state(posted)
         return
-
     candidates.sort(key=lambda x: x[0], reverse=True)
     newest_time, newest_text, newest_key = candidates[0]
     print(f"Posting 1 of {len(candidates)} newest: {newest_key} from {newest_time}")
-
     try:
         post_tweet(newest_text)
         posted[newest_key]=True

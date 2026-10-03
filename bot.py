@@ -59,57 +59,51 @@ def post_tweet(text):
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
             storage_state=AUTH_FILE if os.path.exists(AUTH_FILE) else None,
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         )
         page = context.new_page()
         page.goto("https://x.com/compose/tweet", timeout=60000)
-        page.wait_for_timeout(4000)
+        page.wait_for_load_state("domcontentloaded")
+        page.wait_for_timeout(5000)
+
         if "login" in page.url or "flow" in page.url:
             print("Auth expired, doing fresh login...")
             if os.path.exists(AUTH_FILE):
                 os.remove(AUTH_FILE)
-                browser.close()
-                browser = p.chromium.launch(headless=True)
-                context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                page = context.new_page()
+            browser.close()
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+            page = context.new_page()
             page.goto("https://x.com/i/flow/login", timeout=60000)
             page.wait_for_load_state("networkidle", timeout=20000)
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(4000)
             try:
-                user_input = page.locator('input[data-testid="ocfEnterTextTextInput"]').first
-                if not user_input.is_visible(timeout=3000):
-                    user_input = page.locator('input[name="text"]').first
-                if not user_input.is_visible(timeout=3000):
-                    user_input = page.locator('input[autocomplete="username"]').first
-                if not user_input.is_visible(timeout=3000):
-                    user_input = page.locator('input').first
-                user_input.fill(X_USER, timeout=10000)
+                inp = page.locator('input[data-testid="ocfEnterTextTextInput"], input[name="text"]').first
+                inp.fill(X_USER, timeout=10000)
                 page.wait_for_timeout(1000)
-                next_btn = page.locator('button[data-testid="ocfEnterTextNextButton"]').first
-                if not next_btn.is_visible(timeout=2000):
-                    next_btn = page.get_by_role("button", name="Next").first
-                next_btn.click()
+                nxt = page.locator('button[data-testid="ocfEnterTextNextButton"]').first
+                if not nxt.is_visible(timeout=2000):
+                    nxt = page.get_by_role("button", name="Next").first
+                nxt.click()
                 page.wait_for_timeout(4000)
             except Exception as e:
                 print(f"Username step failed: {e}")
                 raise
             try:
-                challenge_input = page.locator('input[data-testid="ocfEnterTextTextInput"]').first
-                if challenge_input.is_visible(timeout=3000):
-                    if "phone" in page.content().lower() or "email" in page.content().lower():
-                        challenge_input.fill(X_USER)
-                        page.get_by_role("button", name="Next").first.click()
-                        page.wait_for_timeout(3000)
-            except:
-                pass
+                ci = page.locator('input[data-testid="ocfEnterTextTextInput"]').first
+                if ci.is_visible(timeout=3000) and "phone" in page.content().lower():
+                    ci.fill(X_USER)
+                    page.get_by_role("button", name="Next").first.click()
+                    page.wait_for_timeout(3000)
+            except: pass
             try:
                 page.wait_for_selector('input[type="password"]', timeout=15000)
                 page.locator('input[type="password"]').first.fill(X_PASS, timeout=10000)
                 page.wait_for_timeout(1000)
-                login_btn = page.locator('button[data-testid="ocfEnterTextNextButton"]').first
-                if not login_btn.is_visible(timeout=2000):
-                    login_btn = page.get_by_role("button", name="Log in").first
-                login_btn.click()
+                lb = page.locator('button[data-testid="ocfEnterTextNextButton"]').first
+                if not lb.is_visible(timeout=2000):
+                    lb = page.get_by_role("button", name="Log in").first
+                lb.click()
                 page.wait_for_load_state("networkidle", timeout=20000)
                 page.wait_for_timeout(5000)
                 context.storage_state(path=AUTH_FILE)
@@ -118,17 +112,37 @@ def post_tweet(text):
                 print(f"Password step failed: {e}")
                 raise
             page.goto("https://x.com/compose/tweet", timeout=60000)
-            page.wait_for_timeout(3000)
-        try:
-            page.wait_for_selector('div[role="textbox"]', timeout=15000)
-            box = page.locator('div[role="textbox"]').first
-            box.click()
-            page.wait_for_timeout(500)
-            box.fill(text)
-        except:
-            page.wait_for_selector('div[data-testid="tweetTextarea_0"]', timeout=15000)
-            page.locator('div[data-testid="tweetTextarea_0"]').first.fill(text)
-        page.wait_for_timeout(1500)
+            page.wait_for_load_state("domcontentloaded")
+            page.wait_for_timeout(5000)
+
+        # --- FIXED SELECTOR WITH RETRY ---
+        box = None
+        for _ in range(2):
+            for sel in ['div[role="textbox"]','div[data-testid="tweetTextarea_0"]','div[contenteditable="true"][data-lexical-editor="true"]','div[contenteditable="true"]']:
+                try:
+                    print(f"Trying {sel}")
+                    page.wait_for_selector(sel, timeout=5000)
+                    b = page.locator(sel).first
+                    if b.is_visible(timeout=2000):
+                        box = b
+                        print(f"Found {sel}")
+                        break
+                except: continue
+            if box: break
+            page.reload()
+            page.wait_for_timeout(5000)
+
+        if not box:
+            page.screenshot(path="compose_fail.png")
+            raise Exception("No textbox found")
+
+        box.click()
+        page.wait_for_timeout(600)
+        page.keyboard.press("Control+A")
+        page.keyboard.press("Backspace")
+        box.fill(text)
+        page.wait_for_timeout(2000)
+
         try:
             page.locator('button[data-testid="tweetButtonInline"]').first.click(timeout=5000)
         except:
@@ -136,13 +150,13 @@ def post_tweet(text):
                 page.locator('button[data-testid="tweetButton"]').first.click(timeout=5000)
             except:
                 page.get_by_role("button", name="Post").first.click()
-        page.wait_for_timeout(7000)
+        page.wait_for_timeout(8000)
         context.storage_state(path=AUTH_FILE)
         browser.close()
         print("Posted OK")
 
 def main():
-    print("Ballpoint v7.0 ONE PER RUN + 15MIN EXPIRY")
+    print("Ballpoint v7.1 FIXED TEXTBOX ONLY")
     posted=load_state()
     now=datetime.now(timezone.utc)
     today=now.strftime("%Y%m%d")
@@ -188,8 +202,7 @@ def main():
         return
     print(f"FOTMOB: {len(leagues)} leagues today")
 
-    # --- NEW LOGIC: COLLECT CANDIDATES, POST ONLY 1 NEWEST, EXPIRE 15MIN ---
-    candidates = [] # (first_seen_datetime, text, key)
+    candidates = []
 
     for lg in leagues:
         for m in lg.get("matches",[]):
@@ -216,7 +229,6 @@ def main():
             if not is_my_team(home) and not is_my_team(away):
                 continue
 
-            # FT / HT / KICKOFF etc - track first seen
             def add_candidate(txt, key):
                 fk = f"{key}_first_seen"
                 if key in posted:
@@ -231,7 +243,7 @@ def main():
                             candidates.append((first, txt, key))
                         else:
                             print(f"Expired >15min skip: {key}")
-                            posted[key] = True # mark as expired to never retry
+                            posted[key] = True
                     except:
                         candidates.append((now, txt, key))
 
@@ -247,7 +259,6 @@ def main():
             if reason=="FT":
                 add_candidate(format_fulltime(home,away,sh,sa), f"{mid}_ft")
 
-            # Goals / Red cards from details - only for live or just finished
             if live or reason=="FT":
                 try:
                     det=None
@@ -311,7 +322,6 @@ def main():
         save_state(posted)
         return
 
-    # Newest first
     candidates.sort(key=lambda x: x[0], reverse=True)
     newest_time, newest_text, newest_key = candidates[0]
     print(f"Posting 1 of {len(candidates)} newest: {newest_key} from {newest_time}")

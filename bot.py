@@ -56,44 +56,95 @@ def format_red(th,ta,sh,sa,player,minute): return f"RED CARD!\n\n{th} {sh}-{sa} 
 def post_tweet(text):
     print(f"TWEETING: {text[:80]}...")
     with sync_playwright() as p:
-        browser=p.chromium.launch(headless=True)
-        context=browser.new_context(storage_state=AUTH_FILE) if os.path.exists(AUTH_FILE) else browser.new_context()
-        page=context.new_page()
-        if not os.path.exists(AUTH_FILE):
-            page.goto("https://x.com/login",timeout=60000)
-            page.wait_for_timeout(4000)
-            # NEW: robust X login selectors 2026
-            try:
-                page.locator('input[name="text"]').fill(X_USER, timeout=15000)
-            except:
-                try:
-                    page.locator('input[autocomplete="username"]').fill(X_USER, timeout=15000)
-                except:
-                    page.get_by_test_id("ocfEnterTextTextInput").fill(X_USER, timeout=15000)
-            page.get_by_role("button",name="Next").click()
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            storage_state=AUTH_FILE if os.path.exists(AUTH_FILE) else None,
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
+
+        # 1. Try saved session first
+        page.goto("https://x.com/compose/tweet", timeout=60000)
+        page.wait_for_timeout(4000)
+
+        if "login" in page.url or "flow" in page.url:
+            print("Auth expired, doing fresh login...")
+            if os.path.exists(AUTH_FILE):
+                os.remove(AUTH_FILE)
+                browser.close()
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                page = context.new_page()
+
+            page.goto("https://x.com/i/flow/login", timeout=60000)
+            page.wait_for_load_state("networkidle", timeout=20000)
             page.wait_for_timeout(3000)
+
             try:
-                page.locator('input[type="password"]').fill(X_PASS, timeout=15000)
+                user_input = page.locator('input[data-testid="ocfEnterTextTextInput"]').first
+                if not user_input.is_visible(timeout=3000):
+                    user_input = page.locator('input[name="text"]').first
+                if not user_input.is_visible(timeout=3000):
+                    user_input = page.locator('input[autocomplete="username"]').first
+                if not user_input.is_visible(timeout=3000):
+                    user_input = page.locator('input').first
+
+                user_input.fill(X_USER, timeout=10000)
+                print(f"Filled username")
+                page.wait_for_timeout(1000)
+
+                next_btn = page.locator('button[data-testid="ocfEnterTextNextButton"]').first
+                if not next_btn.is_visible(timeout=2000):
+                    next_btn = page.get_by_role("button", name="Next").first
+                next_btn.click()
+                page.wait_for_timeout(4000)
+            except Exception as e:
+                print(f"Username step failed: {e}")
+                raise
+
+            try:
+                challenge_input = page.locator('input[data-testid="ocfEnterTextTextInput"]').first
+                if challenge_input.is_visible(timeout=3000):
+                    if "phone" in page.content().lower() or "email" in page.content().lower():
+                        challenge_input.fill(X_USER)
+                        page.get_by_role("button", name="Next").first.click()
+                        page.wait_for_timeout(3000)
             except:
-                page.locator('input[name="password"]').fill(X_PASS, timeout=15000)
-            page.get_by_role("button",name="Log in").click()
-            page.wait_for_timeout(6000)
-            context.storage_state(path=AUTH_FILE)
-        page.goto("https://x.com/compose/tweet",timeout=60000)
-        page.wait_for_timeout(3000)
-        if "login" in page.url:
-            if os.path.exists(AUTH_FILE): os.remove(AUTH_FILE)
-            browser.close()
-            return post_tweet(text)
-        page.wait_for_selector('div[role="textbox"]',timeout=15000)
-        page.locator('div[role="textbox"]').first.fill(text)
-        page.wait_for_timeout(1000)
-        page.get_by_role("button",name="Post").first.click()
-        page.wait_for_timeout(5000)
+                pass
+
+            try:
+                page.wait_for_selector('input[type="password"]', timeout=15000)
+                page.locator('input[type="password"]').first.fill(X_PASS, timeout=10000)
+                print("Filled password")
+                page.wait_for_timeout(1000)
+                login_btn = page.locator('button[data-testid="ocfEnterTextNextButton"]').first
+                if not login_btn.is_visible(timeout=2000):
+                    login_btn = page.get_by_role("button", name="Log in").first
+                login_btn.click()
+                page.wait_for_load_state("networkidle", timeout=20000)
+                page.wait_for_timeout(5000)
+                context.storage_state(path=AUTH_FILE)
+                print("Saved new auth.json")
+            except Exception as e:
+                print(f"Password step failed: {e}")
+                raise
+
+            page.goto("https://x.com/compose/tweet", timeout=60000)
+            page.wait_for_timeout(3000)
+
+        page.wait_for_selector('div[data-testid="tweetTextarea_0"]', timeout=15000)
+        page.locator('div[data-testid="tweetTextarea_0"]').first.fill(text)
+        page.wait_for_timeout(1500)
+        try:
+            page.locator('button[data-testid="tweetButtonInline"]').first.click(timeout=5000)
+        except:
+            page.get_by_role("button", name="Post").first.click()
+        page.wait_for_timeout(6000)
         browser.close()
+        print("Posted OK")
 
 def main():
-    print("Ballpoint v6.6 INTERCEPT + bugfix")
+    print("Ballpoint v6.7 FINAL")
     posted=load_state()
     today=datetime.now(timezone.utc).strftime("%Y%m%d")
     print(f"Date {today}")
@@ -168,7 +219,6 @@ def main():
         fid=f["id"]; home=f["home"]; away=f["away"]; sh=f["sh"]; sa=f["sa"]; elapsed=f["elapsed"]; reason=f["reason"]; live_str=f["live_str"]
         prev_score=posted.get(f"{fid}_score","x-x")
         curr_score=f"{sh}-{sa}"
-        # Don't tweet kickoff for FT games
         is_live = f["started"] and not f["finished"] and reason!="FT"
         if is_live and elapsed<=5 and f"{fid}_kick" not in posted:
             try: post_tweet(format_kickoff(home,away)); posted[f"{fid}_kick"]=True

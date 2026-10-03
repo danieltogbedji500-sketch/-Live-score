@@ -1,15 +1,13 @@
 import os, json, requests, base64, re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from playwright.sync_api import sync_playwright
 
-# FIX FOR CLOUDFLARE BLOCK - FotMob blocks GitHub IPs
 try:
     import cloudscraper
     scraper = cloudscraper.create_scraper()
 except:
     scraper = requests
 
-# FotMob needs no key
 X_USER=os.getenv("X_USER")
 X_PASS=os.getenv("X_PASS")
 STATE_FILE="state.json"
@@ -89,59 +87,75 @@ def post_tweet(text):
         page.wait_for_timeout(5000)
         browser.close()
 
-def find_leagues(obj):
-    # Recursively find 'leagues' key in Next.js blob
+def find_leagues_recursive(obj):
     if isinstance(obj, dict):
-        if "leagues" in obj and isinstance(obj["leagues"], list):
+        if "leagues" in obj and isinstance(obj["leagues"], list) and len(obj["leagues"])>0:
             return obj["leagues"]
         for v in obj.values():
-            res = find_leagues(v)
-            if res:
-                return res
+            r = find_leagues_recursive(v)
+            if r:
+                return r
     elif isinstance(obj, list):
-        for item in obj:
-            res = find_leagues(item)
-            if res:
-                return res
+        for it in obj:
+            r = find_leagues_recursive(it)
+            if r:
+                return r
     return None
 
 def main():
-    print("Ballpoint v6.3 FOTMOB NEXT_DATA mode starting")
+    print("Ballpoint v6.4 FOTMOB NEXT_DATA fallback fix")
     posted=load_state()
-    today=datetime.now(timezone.utc).strftime("%Y%m%d")
+    base_today=datetime.now(timezone.utc)
 
-    data=None
     leagues=None
-    try:
-        with sync_playwright() as pw:
-            browser=pw.chromium.launch(headless=True)
-            context=browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-            page=context.new_page()
-            url = f"https://www.fotmob.com/matches?date={today}"
-            print(f"Loading {url}")
-            page.goto(url, timeout=60000)
-            page.wait_for_timeout(8000)
-            # Get __NEXT_DATA__ JSON from page
-            next_data_text = page.locator('script#__NEXT_DATA__').inner_text()
-            print(f"DEBUG NEXT_DATA len {len(next_data_text)}")
-            next_json = json.loads(next_data_text)
-            leagues = find_leagues(next_json)
-            if leagues:
-                print(f"Found {len(leagues)} leagues via NEXT_DATA")
-                data = {"leagues": leagues}
-            else:
-                print("Leagues not found in NEXT_DATA, dumping keys")
-                print(str(next_json)[:1000])
-            browser.close()
-    except Exception as e:
-        print(f"FOTMOB fetch failed: {e}")
-        return
+    data=None
+
+    # Try today + yesterday (because 20261003 may have no games on FotMob in future)
+    for delta in [0, -1, 1]:
+        try_date = (base_today + timedelta(days=delta)).strftime("%Y%m%d")
+        print(f"\n=== Trying date {try_date} ===")
+        try:
+            with sync_playwright() as pw:
+                browser=pw.chromium.launch(headless=True)
+                context=browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                page=context.new_page()
+                url = f"https://www.fotmob.com/matches?date={try_date}"
+                print(f"Loading {url}")
+                page.goto(url, timeout=60000)
+                page.wait_for_timeout(8000)
+                next_data_text = page.locator('script#__NEXT_DATA__').inner_text()
+                print(f"DEBUG NEXT_DATA len {len(next_data_text)}")
+                next_json = json.loads(next_data_text)
+
+                fallback = next_json.get("props",{}).get("pageProps",{}).get("fallback",{})
+                print(f"DEBUG fallback keys ({len(fallback)}): {list(fallback.keys())[:20]}")
+
+                # Search inside fallback values
+                for k, v in fallback.items():
+                    if isinstance(v, dict) and "leagues" in v and isinstance(v["leagues"], list) and len(v["leagues"])>0:
+                        leagues = v["leagues"]
+                        print(f"Found leagues via key {k}: {len(leagues)} leagues")
+                        break
+
+                if not leagues:
+                    leagues = find_leagues_recursive(fallback)
+                    if leagues:
+                        print(f"Found leagues via recursive search: {len(leagues)}")
+
+                browser.close()
+                if leagues:
+                    data = {"leagues": leagues}
+                    break
+        except Exception as e:
+            print(f"Date {try_date} failed: {e}")
+            import traceback; traceback.print_exc()
+            continue
 
     if not leagues:
-        print("FOTMOB fetch failed: could not parse leagues from HTML")
+        print("FOTMOB fetch failed: could not parse leagues from HTML after all dates")
         return
 
-    print(f"FOTMOB: {len(leagues)} leagues today")
+    print(f"\nFOTMOB: {len(leagues)} leagues today")
 
     targets=[]
     for lg in leagues:
@@ -228,7 +242,6 @@ def main():
                     page2.wait_for_timeout(5000)
                     nd_text = page2.locator('script#__NEXT_DATA__').inner_text()
                     nd_json = json.loads(nd_text)
-                    # Find match facts inside
                     def find_events(o):
                         if isinstance(o, dict):
                             if "events" in o and isinstance(o["events"], dict) and "events" in o["events"]:

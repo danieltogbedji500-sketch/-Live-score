@@ -1,4 +1,4 @@
-import os, json, requests, base64
+import os, json, requests, base64, re
 from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright
 
@@ -89,34 +89,58 @@ def post_tweet(text):
         page.wait_for_timeout(5000)
         browser.close()
 
+def find_leagues(obj):
+    # Recursively find 'leagues' key in Next.js blob
+    if isinstance(obj, dict):
+        if "leagues" in obj and isinstance(obj["leagues"], list):
+            return obj["leagues"]
+        for v in obj.values():
+            res = find_leagues(v)
+            if res:
+                return res
+    elif isinstance(obj, list):
+        for item in obj:
+            res = find_leagues(item)
+            if res:
+                return res
+    return None
+
 def main():
-    print("Ballpoint v6.2 FOTMOB mode starting")
+    print("Ballpoint v6.3 FOTMOB NEXT_DATA mode starting")
     posted=load_state()
     today=datetime.now(timezone.utc).strftime("%Y%m%d")
 
-    # FIXED: Use Playwright to fetch FotMob (bypasses Cloudflare)
     data=None
+    leagues=None
     try:
         with sync_playwright() as pw:
             browser=pw.chromium.launch(headless=True)
             context=browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
             page=context.new_page()
-            page.goto("https://www.fotmob.com/", timeout=60000)
-            page.wait_for_timeout(4000)
-            mas_body=f'/api/matches?date={today}'
-            xmas=base64.b64encode(f'{{"body":{{"url":"{mas_body}"}}}}'.encode()).decode()
-            json_text=page.evaluate(f"""async () => {{
-                const res = await fetch('{mas_body}', {{ headers: {{'x-mas': '{xmas}'}} }});
-                return await res.text();
-            }}""")
-            print(f"DEBUG fetch len {len(json_text)} preview: {json_text[:300]}")
-            data=json.loads(json_text)
+            url = f"https://www.fotmob.com/matches?date={today}"
+            print(f"Loading {url}")
+            page.goto(url, timeout=60000)
+            page.wait_for_timeout(8000)
+            # Get __NEXT_DATA__ JSON from page
+            next_data_text = page.locator('script#__NEXT_DATA__').inner_text()
+            print(f"DEBUG NEXT_DATA len {len(next_data_text)}")
+            next_json = json.loads(next_data_text)
+            leagues = find_leagues(next_json)
+            if leagues:
+                print(f"Found {len(leagues)} leagues via NEXT_DATA")
+                data = {"leagues": leagues}
+            else:
+                print("Leagues not found in NEXT_DATA, dumping keys")
+                print(str(next_json)[:1000])
             browser.close()
     except Exception as e:
         print(f"FOTMOB fetch failed: {e}")
         return
 
-    leagues=data.get("leagues",[])
+    if not leagues:
+        print("FOTMOB fetch failed: could not parse leagues from HTML")
+        return
+
     print(f"FOTMOB: {len(leagues)} leagues today")
 
     targets=[]
@@ -200,26 +224,30 @@ def main():
                     browser2=pw2.chromium.launch(headless=True)
                     context2=browser2.new_context()
                     page2=context2.new_page()
-                    page2.goto("https://www.fotmob.com/", timeout=60000)
-                    page2.wait_for_timeout(2000)
-                    mas_body2=f'/api/matchDetails?matchId={fid}'
-                    xmas2=base64.b64encode(f'{{"body":{{"url":"{mas_body2}"}}}}'.encode()).decode()
-                    jt=page2.evaluate(f"""async () => {{
-                        const res = await fetch('{mas_body2}', {{ headers: {{'x-mas': '{xmas2}'}} }});
-                        return await res.text();
-                    }}""")
-                    det=json.loads(jt)
+                    page2.goto(f"https://www.fotmob.com/match/{fid}", timeout=60000)
+                    page2.wait_for_timeout(5000)
+                    nd_text = page2.locator('script#__NEXT_DATA__').inner_text()
+                    nd_json = json.loads(nd_text)
+                    # Find match facts inside
+                    def find_events(o):
+                        if isinstance(o, dict):
+                            if "events" in o and isinstance(o["events"], dict) and "events" in o["events"]:
+                                return o["events"]["events"]
+                            if "matchFacts" in o:
+                                return find_events(o["matchFacts"])
+                            for v in o.values():
+                                r=find_events(v)
+                                if r: return r
+                        elif isinstance(o, list):
+                            for it in o:
+                                r=find_events(it)
+                                if r: return r
+                        return None
+                    evs = find_events(nd_json) or []
+                    det = {"events": evs}
                     browser2.close()
 
-                events=[]
-                try:
-                    mf=det.get("content",{}).get("matchFacts",{}).get("events",{}).get("events",[])
-                    events=mf
-                except: events=[]
-                if not events:
-                    try:
-                        events=det.get("header",{}).get("events",{}).get("events",[]) or det.get("content",{}).get("events",{}).get("events",[])
-                    except: events=[]
+                events = det.get("events",[]) if det else []
 
                 for ev in events:
                     ev_type=ev.get("type","")

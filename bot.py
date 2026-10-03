@@ -90,7 +90,7 @@ def post_tweet(text):
         browser.close()
 
 def main():
-    print("Ballpoint v6.0 FOTMOB mode starting")
+    print("Ballpoint v6.2 FOTMOB mode starting")
     posted=load_state()
 
     # FOTMOB - No key needed - FIXED HEADERS

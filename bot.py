@@ -28,7 +28,7 @@ def save_state(s):
     with open(STATE_FILE,"w") as f: json.dump(s,f)
 
 def is_my_team(name):
-    bad=["U21","U20","U19","U18","U17"," II","- II"," WOMEN","Women"," U23"]
+    bad=["U21","U20","U19","U18","U17"," II","- II"," WOMEN","Women","(W)"," W "," WOMEN","Women "]
     for b in bad:
         if b.lower() in name.lower(): return False
     if name in MY_NATIONS: return True
@@ -61,18 +61,23 @@ def post_tweet(text):
         page=context.new_page()
         if not os.path.exists(AUTH_FILE):
             page.goto("https://x.com/login",timeout=60000)
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(4000)
+            # NEW: robust X login selectors 2026
             try:
-                page.wait_for_selector('input[autocomplete="username"]',timeout=10000)
-                page.locator('input[autocomplete="username"]').first.fill(X_USER)
+                page.locator('input[name="text"]').fill(X_USER, timeout=15000)
             except:
-                page.locator('input[name="text"]').first.fill(X_USER)
+                try:
+                    page.locator('input[autocomplete="username"]').fill(X_USER, timeout=15000)
+                except:
+                    page.get_by_test_id("ocfEnterTextTextInput").fill(X_USER, timeout=15000)
             page.get_by_role("button",name="Next").click()
             page.wait_for_timeout(3000)
-            page.wait_for_selector('input[type="password"]',timeout=10000)
-            page.locator('input[type="password"]').first.fill(X_PASS)
+            try:
+                page.locator('input[type="password"]').fill(X_PASS, timeout=15000)
+            except:
+                page.locator('input[name="password"]').fill(X_PASS, timeout=15000)
             page.get_by_role("button",name="Log in").click()
-            page.wait_for_timeout(5000)
+            page.wait_for_timeout(6000)
             context.storage_state(path=AUTH_FILE)
         page.goto("https://x.com/compose/tweet",timeout=60000)
         page.wait_for_timeout(3000)
@@ -88,81 +93,50 @@ def post_tweet(text):
         browser.close()
 
 def main():
-    print("Ballpoint v6.5 NETWORK INTERCEPT fix")
+    print("Ballpoint v6.6 INTERCEPT + bugfix")
     posted=load_state()
     today=datetime.now(timezone.utc).strftime("%Y%m%d")
     print(f"Date {today}")
-
     leagues=None
-
     with sync_playwright() as pw:
         browser=pw.chromium.launch(headless=True)
         context=browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page=context.new_page()
-
         captured=[]
-
         def on_response(resp):
             url=resp.url
-            if "fotmob" in url and ("matches" in url or "allMatches" in url or "date" in url):
+            if "fotmob" in url and ("matches" in url):
                 try:
                     if resp.status==200:
-                        ct=resp.headers.get("content-type","")
-                        if "json" in ct or "text" in ct:
-                            body=resp.text()
-                            if '"leagues"' in body and len(body)>1000:
-                                print(f"INTERCEPTED {url} len {len(body)}")
-                                captured.append(json.loads(body))
-                except Exception as e:
-                    print(f"intercept error {e}")
-
+                        body=resp.text()
+                        if '"leagues"' in body and len(body)>1000:
+                            print(f"INTERCEPTED {url} len {len(body)}")
+                            captured.append(json.loads(body))
+                except: pass
         page.on("response", on_response)
-
-        # Load with real date - also try without date param (defaults to today)
         for url_try in [f"https://www.fotmob.com/matches?date={today}", "https://www.fotmob.com/matches"]:
             print(f"GOTO {url_try}")
             try:
                 page.goto(url_try, timeout=60000)
                 page.wait_for_load_state("networkidle", timeout=20000)
                 page.wait_for_timeout(5000)
-                if captured:
-                    break
+                if captured: break
             except Exception as e:
                 print(f"goto fail {e}")
-
         browser.close()
-
         if captured:
-            # Find the one with leagues
             for data in captured:
                 if isinstance(data, dict) and "leagues" in data:
                     leagues=data["leagues"]
                     break
-                # Some endpoints return {"allMatches": {"leagues": []}} etc
-                if isinstance(data, dict):
-                    for v in data.values():
-                        if isinstance(v, dict) and "leagues" in v:
-                            leagues=v["leagues"]
-                            break
-                        if isinstance(v, list) and len(v)>0 and isinstance(v[0], dict) and "matches" in v[0]:
-                            # maybe leagues is list itself?
-                            pass
-
+                for v in data.values() if isinstance(data, dict) else []:
+                    if isinstance(v, dict) and "leagues" in v:
+                        leagues=v["leagues"]
+                        break
     if not leagues:
-        print("FOTMOB fetch failed: intercept got 0 - trying direct API via playwright fetch")
-        # Last try: direct fetch inside browser context with correct x-mas
-        try:
-            with sync_playwright() as pw2:
-                browser=pw2.chromium.launch(headless=True)
-                context=pw2.chromium.launch(headless=True)
-            # Simplified: if intercept fails, we have to abort
-        except:
-            pass
-        print("FOTMOB fetch failed: could not parse leagues from HTML after all dates")
+        print("FOTMOB fetch failed: could not parse leagues")
         return
-
     print(f"FOTMOB: {len(leagues)} leagues today")
-
     targets=[]
     for lg in leagues:
         for m in lg.get("matches",[]):
@@ -174,51 +148,29 @@ def main():
             finished=status_obj.get("finished",False)
             live=status_obj.get("liveTime") is not None or (started and not finished)
             reason=status_obj.get("reason",{}).get("short","")
-
             sh=m.get("home",{}).get("score",0)
             sa=m.get("away",{}).get("score",0)
             if sh is None: sh=0
             if sa is None: sa=0
-
             live_str=status_obj.get("liveTime",{}).get("short","") if status_obj.get("liveTime") else ""
             elapsed=0
             try:
                 if live_str:
                     elapsed=int(''.join(filter(str.isdigit, live_str.split('+')[0])) or 0)
             except: elapsed=0
-
             if not live and reason not in ["HT"]:
-                if reason!="FT":
-                    continue
-
+                if reason!="FT": continue
             if is_my_team(home) or is_my_team(away):
-                targets.append({
-                    "id":mid,
-                    "home":home,
-                    "away":away,
-                    "sh":sh,
-                    "sa":sa,
-                    "elapsed":elapsed,
-                    "reason":reason,
-                    "live_str":live_str,
-                    "started":started,
-                    "finished":finished
-                })
+                targets.append({"id":mid,"home":home,"away":away,"sh":sh,"sa":sa,"elapsed":elapsed,"reason":reason,"live_str":live_str,"started":started,"finished":finished})
                 print(f"-> TARGET: {home} vs {away} [{reason or live_str}] {sh}-{sa}")
-
     print(f"Total for YOUR teams: {len(targets)}")
-
     for f in targets:
-        fid=f["id"]
-        home=f["home"]; away=f["away"]
-        sh=f["sh"]; sa=f["sa"]
-        elapsed=f["elapsed"]
-        reason=f["reason"]
-        live_str=f["live_str"]
+        fid=f["id"]; home=f["home"]; away=f["away"]; sh=f["sh"]; sa=f["sa"]; elapsed=f["elapsed"]; reason=f["reason"]; live_str=f["live_str"]
         prev_score=posted.get(f"{fid}_score","x-x")
         curr_score=f"{sh}-{sa}"
-
-        if f["started"] and elapsed<=5 and f"{fid}_kick" not in posted:
+        # Don't tweet kickoff for FT games
+        is_live = f["started"] and not f["finished"] and reason!="FT"
+        if is_live and elapsed<=5 and f"{fid}_kick" not in posted:
             try: post_tweet(format_kickoff(home,away)); posted[f"{fid}_kick"]=True
             except Exception as e: print(e)
         if elapsed>=40 and elapsed<=42 and sh==0 and sa==0 and f"{fid}_40" not in posted:
@@ -233,8 +185,7 @@ def main():
         if reason=="FT" and f"{fid}_ft" not in posted:
             try: post_tweet(format_fulltime(home,away,sh,sa)); posted[f"{fid}_ft"]=True
             except: pass
-
-        if curr_score!=prev_score or f["started"]:
+        if curr_score!=prev_score or is_live:
             print(f"Score {prev_score} -> {curr_score}, fetching matchDetails for {fid}...")
             try:
                 det=None
@@ -243,35 +194,20 @@ def main():
                     context3=browser3.new_context()
                     page3=context3.new_page()
                     captured_det=[]
-
                     def on_det(resp):
-                        if f"matchId={fid}" in resp.url or f"match/{fid}" in resp.url:
-                            try:
-                                if resp.status==200 and "json" in resp.headers.get("content-type",""):
-                                    txt=resp.text()
-                                    if '"content"' in txt:
-                                        captured_det.append(json.loads(txt))
-                            except: pass
                         if "matchDetails" in resp.url and resp.status==200:
                             try:
                                 txt=resp.text()
-                                if len(txt)>1000:
+                                if len(txt)>1000 and '"content"' in txt:
                                     captured_det.append(json.loads(txt))
                             except: pass
-
                     page3.on("response", on_det)
                     page3.goto(f"https://www.fotmob.com/match/{fid}", timeout=60000)
                     page3.wait_for_load_state("networkidle", timeout=15000)
                     page3.wait_for_timeout(3000)
                     browser3.close()
-                    if captured_det:
-                        det=captured_det[0]
-
-                if not det:
-                    continue
-
-                # Extract events
-                events=[]
+                    if captured_det: det=captured_det[0]
+                if not det: continue
                 def find_events(o):
                     if isinstance(o, dict):
                         if "events" in o and isinstance(o["events"], dict) and "events" in o["events"]:
@@ -287,17 +223,13 @@ def main():
                             r=find_events(it)
                             if r: return r
                     return None
-
                 events = find_events(det) or []
-
                 for ev in events:
                     ev_type=ev.get("type","")
                     if ev_type=="Goal":
-                        minute=ev.get("timeStr","").replace("'","") or ev.get("time",0)
+                        minute=str(ev.get("timeStr","") or ev.get("time",0)).replace("'","")
                         player=ev.get("playerName") or ev.get("name","Unknown")
-                        assist=None
-                        if "assist" in str(ev).lower():
-                            assist=ev.get("assistStr") or ev.get("assist")
+                        assist=ev.get("assistStr") or ev.get("assist")
                         key=f"{fid}_{minute}_{player}_goal"
                         if key not in posted:
                             try:
@@ -306,7 +238,7 @@ def main():
                             except Exception as e: print(e)
                     if "Card" in ev_type or ev.get("card")=="Red" or "Red" in str(ev.get("type","")):
                         if ev.get("card")=="Red" or "red" in str(ev).lower():
-                            minute=ev.get("timeStr","").replace("'","") or ev.get("time",0)
+                            minute=str(ev.get("timeStr","") or ev.get("time",0)).replace("'","")
                             player=ev.get("playerName","Unknown")
                             key=f"{fid}_red_{minute}_{player}"
                             if key not in posted:
@@ -316,9 +248,7 @@ def main():
                                 except Exception as e: print(e)
             except Exception as e:
                 print(f"Details failed for {fid}: {e}")
-
             posted[f"{fid}_score"]=curr_score
-
         save_state(posted)
     print("Done - FotMob")
 

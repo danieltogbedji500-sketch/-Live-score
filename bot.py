@@ -63,7 +63,6 @@ def post_tweet(text):
         )
         page = context.new_page()
 
-        # 1. Try saved session first
         page.goto("https://x.com/compose/tweet", timeout=60000)
         page.wait_for_timeout(4000)
 
@@ -88,11 +87,8 @@ def post_tweet(text):
                     user_input = page.locator('input[autocomplete="username"]').first
                 if not user_input.is_visible(timeout=3000):
                     user_input = page.locator('input').first
-
                 user_input.fill(X_USER, timeout=10000)
-                print(f"Filled username")
                 page.wait_for_timeout(1000)
-
                 next_btn = page.locator('button[data-testid="ocfEnterTextNextButton"]').first
                 if not next_btn.is_visible(timeout=2000):
                     next_btn = page.get_by_role("button", name="Next").first
@@ -115,7 +111,6 @@ def post_tweet(text):
             try:
                 page.wait_for_selector('input[type="password"]', timeout=15000)
                 page.locator('input[type="password"]').first.fill(X_PASS, timeout=10000)
-                print("Filled password")
                 page.wait_for_timeout(1000)
                 login_btn = page.locator('button[data-testid="ocfEnterTextNextButton"]').first
                 if not login_btn.is_visible(timeout=2000):
@@ -132,19 +127,33 @@ def post_tweet(text):
             page.goto("https://x.com/compose/tweet", timeout=60000)
             page.wait_for_timeout(3000)
 
-        page.wait_for_selector('div[data-testid="tweetTextarea_0"]', timeout=15000)
-        page.locator('div[data-testid="tweetTextarea_0"]').first.fill(text)
+        # FIXED: Use role=textbox first, fallback to tweetTextarea_0
+        try:
+            page.wait_for_selector('div[role="textbox"]', timeout=15000)
+            box = page.locator('div[role="textbox"]').first
+            box.click()
+            page.wait_for_timeout(500)
+            box.fill(text)
+        except:
+            page.wait_for_selector('div[data-testid="tweetTextarea_0"]', timeout=15000)
+            page.locator('div[data-testid="tweetTextarea_0"]').first.fill(text)
+
         page.wait_for_timeout(1500)
         try:
             page.locator('button[data-testid="tweetButtonInline"]').first.click(timeout=5000)
         except:
-            page.get_by_role("button", name="Post").first.click()
-        page.wait_for_timeout(6000)
+            try:
+                page.locator('button[data-testid="tweetButton"]').first.click(timeout=5000)
+            except:
+                page.get_by_role("button", name="Post").first.click()
+
+        page.wait_for_timeout(7000)
+        context.storage_state(path=AUTH_FILE)
         browser.close()
         print("Posted OK")
 
 def main():
-    print("Ballpoint v6.7 FINAL")
+    print("Ballpoint v6.8 FINAL FIXED")
     posted=load_state()
     today=datetime.now(timezone.utc).strftime("%Y%m%d")
     print(f"Date {today}")
@@ -278,8 +287,10 @@ def main():
                     ev_type=ev.get("type","")
                     if ev_type=="Goal":
                         minute=str(ev.get("timeStr","") or ev.get("time",0)).replace("'","")
-                        player=ev.get("playerName") or ev.get("name","Unknown")
-                        assist=ev.get("assistStr") or ev.get("assist")
+                        # FIXED: player name can be nested
+                        player=ev.get("playerName") or ev.get("name") or ev.get("player",{}).get("name","Unknown")
+                        if isinstance(player, dict): player=player.get("name","Unknown")
+                        assist=ev.get("assistStr") or ev.get("assist") or ev.get("assistPlayer",{}).get("name")
                         key=f"{fid}_{minute}_{player}_goal"
                         if key not in posted:
                             try:
@@ -289,7 +300,8 @@ def main():
                     if "Card" in ev_type or ev.get("card")=="Red" or "Red" in str(ev.get("type","")):
                         if ev.get("card")=="Red" or "red" in str(ev).lower():
                             minute=str(ev.get("timeStr","") or ev.get("time",0)).replace("'","")
-                            player=ev.get("playerName","Unknown")
+                            player=ev.get("playerName") or ev.get("player",{}).get("name","Unknown")
+                            if isinstance(player, dict): player=player.get("name","Unknown")
                             key=f"{fid}_red_{minute}_{player}"
                             if key not in posted:
                                 try:

@@ -1,4 +1,5 @@
 import os, json, requests
+from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright
 
 API_KEY=os.getenv("API_FOOTBALL_KEY")
@@ -82,23 +83,31 @@ def post_tweet(text):
         browser.close()
 
 def main():
-    print("Ballpoint v5.8.7 FINAL starting")
+    print("Ballpoint v5.8.8 DATE mode starting")
     posted=load_state()
     headers={"x-apisports-key":API_KEY}
-    r=requests.get("https://v3.football.api-sports.io/fixtures?live=all",headers=headers,timeout=20)
+    today=datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    r=requests.get(f"https://v3.football.api-sports.io/fixtures?date={today}",headers=headers,timeout=20)
     data=r.json()
     if data.get("errors") and data["errors"].get("requests"):
         print(f"LIMIT HIT: {data['errors']}")
         return
-    fixtures=data.get("response",[])
-    print(f"LIVE API: {len(fixtures)} fixtures")
+
+    all_today=data.get("response",[])
+    print(f"DATE API: {len(all_today)} fixtures today")
+
     targets=[]
-    for f in fixtures:
+    for f in all_today:
+        status=f['fixture']['status']['short']
+        if status not in ['1H','HT','2H','ET','BT','P','LIVE']:
+            continue
         home=f['teams']['home']['name']; away=f['teams']['away']['name']
         if is_my_team(home) or is_my_team(away):
             targets.append(f)
-            print(f"-> TARGET: {home} vs {away} [{f['fixture']['status']['short']}] {f['goals']['home']}-{f['goals']['away']}")
+            print(f"-> TARGET: {home} vs {away} [{status}] {f['goals']['home']}-{f['goals']['away']}")
     print(f"Total for YOUR teams: {len(targets)}")
+
     for f in targets:
         fid=str(f['fixture']['id'])
         home=f['teams']['home']['name']; away=f['teams']['away']['name']

@@ -13,19 +13,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       - name: Install deps
         run: |
           pip install requests playwright cloudscraper
-          playwright install chromium
+          playwright install chromium --with-deps
+
+      - name: Restore state + auth
+        run: |
+          echo "Checking for existing state.json and auth.json in repo"
+          ls -la state.json auth.json || echo "No local files yet - will be created on first run"
 
       - name: Run bot
         env:
@@ -34,12 +39,31 @@ jobs:
           X_PASSWORD: ${{ secrets.X_PASSWORD }}
           X_USER: ${{ secrets.X_USER }}
           X_PASS: ${{ secrets.X_PASS }}
-        run: python bot.py
+        run: |
+          python bot.py
+          echo "Bot finished, checking outputs"
+          ls -la state.json auth.json || true
+          if [ -f compose_fail.png ]; then echo "Compose failed screenshot exists"; fi
 
-      - name: Save state
+      - name: Save state + auth
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add state.json
-          git diff --staged --quiet || git commit -m "update state [skip ci]"
-          git push
+          # Pull latest to avoid conflicts
+          git pull --rebase || true
+          # Add both files if they exist
+          [ -f state.json ] && git add state.json || echo "No state.json"
+          [ -f auth.json ] && git add auth.json || echo "No auth.json"
+          git diff --staged --quiet || git commit -m "update state + auth [skip ci]"
+          git push || echo "Push failed - maybe no changes"
+
+      - name: Upload debug screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: |
+            compose_fail.png
+            login_fail.png
+          if-no-files-found: ignore

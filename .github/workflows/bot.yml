@@ -24,7 +24,7 @@ jobs:
 
       - name: Install deps
         run: |
-          pip install requests playwright
+          pip install requests playwright cloudscraper
           playwright install chromium
 
       - name: Run bot
@@ -32,6 +32,8 @@ jobs:
           API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
           X_USERNAME: ${{ secrets.X_USERNAME }}
           X_PASSWORD: ${{ secrets.X_PASSWORD }}
+          X_USER: ${{ secrets.X_USER }}
+          X_PASS: ${{ secrets.X_PASS }}
         run: python bot.py
 
       - name: Save state

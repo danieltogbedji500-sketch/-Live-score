@@ -1,4 +1,4 @@
-import os, json, requests
+import os, json, requests, base64
 from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright
 
@@ -92,18 +92,26 @@ def post_tweet(text):
 def main():
     print("Ballpoint v6.2 FOTMOB mode starting")
     posted=load_state()
-
-    # FOTMOB - No key needed - FIXED HEADERS
     today=datetime.now(timezone.utc).strftime("%Y%m%d")
-    headers={
-        "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept":"application/json",
-        "Referer":"https://www.fotmob.com/"
-    }
 
+    # FIXED: Use Playwright to fetch FotMob (bypasses Cloudflare)
+    data=None
     try:
-        r=scraper.get(f"https://www.fotmob.com/api/matches?date={today}",headers=headers,timeout=20)
-        data=r.json()
+        with sync_playwright() as pw:
+            browser=pw.chromium.launch(headless=True)
+            context=browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            page=context.new_page()
+            page.goto("https://www.fotmob.com/", timeout=60000)
+            page.wait_for_timeout(4000)
+            mas_body=f'/api/matches?date={today}'
+            xmas=base64.b64encode(f'{{"body":{{"url":"{mas_body}"}}}}'.encode()).decode()
+            json_text=page.evaluate(f"""async () => {{
+                const res = await fetch('{mas_body}', {{ headers: {{'x-mas': '{xmas}'}} }});
+                return await res.text();
+            }}""")
+            print(f"DEBUG fetch len {len(json_text)} preview: {json_text[:300]}")
+            data=json.loads(json_text)
+            browser.close()
     except Exception as e:
         print(f"FOTMOB fetch failed: {e}")
         return
@@ -187,8 +195,22 @@ def main():
         if curr_score!=prev_score or f["started"]:
             print(f"Score {prev_score} -> {curr_score}, fetching matchDetails for {fid}...")
             try:
-                dr=scraper.get(f"https://www.fotmob.com/api/matchDetails?matchId={fid}",headers=headers,timeout=20)
-                det=dr.json()
+                det=None
+                with sync_playwright() as pw2:
+                    browser2=pw2.chromium.launch(headless=True)
+                    context2=browser2.new_context()
+                    page2=context2.new_page()
+                    page2.goto("https://www.fotmob.com/", timeout=60000)
+                    page2.wait_for_timeout(2000)
+                    mas_body2=f'/api/matchDetails?matchId={fid}'
+                    xmas2=base64.b64encode(f'{{"body":{{"url":"{mas_body2}"}}}}'.encode()).decode()
+                    jt=page2.evaluate(f"""async () => {{
+                        const res = await fetch('{mas_body2}', {{ headers: {{'x-mas': '{xmas2}'}} }});
+                        return await res.text();
+                    }}""")
+                    det=json.loads(jt)
+                    browser2.close()
+
                 events=[]
                 try:
                     mf=det.get("content",{}).get("matchFacts",{}).get("events",{}).get("events",[])

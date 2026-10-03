@@ -2,7 +2,7 @@ import os, json, requests
 from datetime import datetime, timezone
 from playwright.sync_api import sync_playwright
 
-API_KEY=os.getenv("API_FOOTBALL_KEY")
+# FotMob needs no key
 X_USER=os.getenv("X_USER")
 X_PASS=os.getenv("X_PASS")
 STATE_FILE="state.json"
@@ -83,76 +83,156 @@ def post_tweet(text):
         browser.close()
 
 def main():
-    print("Ballpoint v5.8.8 DATE mode starting")
+    print("Ballpoint v6.0 FOTMOB mode starting")
     posted=load_state()
-    headers={"x-apisports-key":API_KEY}
-    today=datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    r=requests.get(f"https://v3.football.api-sports.io/fixtures?date={today}",headers=headers,timeout=20)
-    data=r.json()
-    if data.get("errors") and data["errors"].get("requests"):
-        print(f"LIMIT HIT: {data['errors']}")
+    # FOTMOB - No key needed
+    today=datetime.now(timezone.utc).strftime("%Y%m%d")
+    headers={"User-Agent":"Mozilla/5.0"}
+
+    try:
+        r=requests.get(f"https://www.fotmob.com/api/matches?date={today}",headers=headers,timeout=20)
+        data=r.json()
+    except Exception as e:
+        print(f"FOTMOB fetch failed: {e}")
         return
 
-    all_today=data.get("response",[])
-    print(f"DATE API: {len(all_today)} fixtures today")
+    leagues=data.get("leagues",[])
+    print(f"FOTMOB: {len(leagues)} leagues today")
 
     targets=[]
-    for f in all_today:
-        status=f['fixture']['status']['short']
-        if status not in ['1H','HT','2H','ET','BT','P','LIVE']:
-            continue
-        home=f['teams']['home']['name']; away=f['teams']['away']['name']
-        if is_my_team(home) or is_my_team(away):
-            targets.append(f)
-            print(f"-> TARGET: {home} vs {away} [{status}] {f['goals']['home']}-{f['goals']['away']}")
+    for lg in leagues:
+        for m in lg.get("matches",[]):
+            # FotMob structure
+            home=m.get("home",{}).get("name","")
+            away=m.get("away",{}).get("name","")
+            mid=str(m.get("id"))
+            status_obj=m.get("status",{})
+            # live check
+            started=status_obj.get("started",False)
+            finished=status_obj.get("finished",False)
+            live=status_obj.get("liveTime") is not None or (started and not finished)
+            reason=status_obj.get("reason",{}).get("short","") # HT, FT etc
+
+            # Parse score - FotMob puts in home/away score
+            sh=m.get("home",{}).get("score",0)
+            sa=m.get("away",{}).get("score",0)
+            # sometimes score is in status
+            if sh is None: sh=0
+            if sa is None: sa=0
+
+            # liveTime like 45', 90+2'
+            live_str=status_obj.get("liveTime",{}).get("short","") if status_obj.get("liveTime") else ""
+            elapsed=0
+            try:
+                if live_str:
+                    elapsed=int(''.join(filter(str.isdigit, live_str.split('+')[0])) or 0)
+            except: elapsed=0
+
+            if not live and reason not in ["HT"]: # keep HT as live for halftime tweet
+                # also allow recently finished for FT tweet
+                if reason!="FT":
+                    continue
+
+            if is_my_team(home) or is_my_team(away):
+                targets.append({
+                    "id":mid,
+                    "home":home,
+                    "away":away,
+                    "sh":sh,
+                    "sa":sa,
+                    "elapsed":elapsed,
+                    "reason":reason,
+                    "live_str":live_str,
+                    "started":started,
+                    "finished":finished
+                })
+                print(f"-> TARGET: {home} vs {away} [{reason or live_str}] {sh}-{sa}")
+
     print(f"Total for YOUR teams: {len(targets)}")
 
     for f in targets:
-        fid=str(f['fixture']['id'])
-        home=f['teams']['home']['name']; away=f['teams']['away']['name']
-        sh=f['goals']['home']; sa=f['goals']['away']
-        status=f['fixture']['status']['short']; elapsed=f['fixture']['status']['elapsed'] or 0
+        fid=f["id"]
+        home=f["home"]; away=f["away"]
+        sh=f["sh"]; sa=f["sa"]
+        elapsed=f["elapsed"]
+        reason=f["reason"]
+        live_str=f["live_str"]
+
         prev_score=posted.get(f"{fid}_score","x-x")
         curr_score=f"{sh}-{sa}"
-        if status in ["1H","HT","2H"] and elapsed<=5 and f"{fid}_kick" not in posted:
+
+        # Kickoff
+        if f["started"] and elapsed<=5 and f"{fid}_kick" not in posted:
             try: post_tweet(format_kickoff(home,away)); posted[f"{fid}_kick"]=True
             except Exception as e: print(e)
+
+        # 40' and 80' checks
         if elapsed>=40 and elapsed<=42 and sh==0 and sa==0 and f"{fid}_40" not in posted:
             try: post_tweet(format_40(home,away)); posted[f"{fid}_40"]=True
             except: pass
         if elapsed>=80 and elapsed<=82 and sh==0 and sa==0 and f"{fid}_80" not in posted:
             try: post_tweet(format_80(home,away)); posted[f"{fid}_80"]=True
             except: pass
-        if status=="HT" and f"{fid}_ht" not in posted:
+        if reason=="HT" and f"{fid}_ht" not in posted:
             try: post_tweet(format_halftime(home,away,sh,sa)); posted[f"{fid}_ht"]=True
             except: pass
-        if status in ["FT","AET","PEN"] and f"{fid}_ft" not in posted:
+        if reason=="FT" and f"{fid}_ft" not in posted:
             try: post_tweet(format_fulltime(home,away,sh,sa)); posted[f"{fid}_ft"]=True
             except: pass
-        if curr_score!=prev_score:
-            print(f"Score changed {prev_score} -> {curr_score}, fetching events...")
-            er=requests.get(f"https://v3.football.api-sports.io/fixtures/events?fixture={fid}",headers=headers,timeout=20)
-            events=er.json().get("response",[])
-            for ev in events:
-                if ev['type']=='Goal':
-                    key=f"{fid}_{ev['time']['elapsed']}_{ev['player'].get('id')}"
-                    if key not in posted:
-                        assist=ev.get('assist',{}).get('name')
-                        try:
-                            post_tweet(format_goal(home,away,sh,sa,ev['player'].get('name','Unknown'),ev['time']['elapsed'],assist))
-                            posted[key]=True
-                        except Exception as e: print(e)
-                if ev['type']=='Card' and 'Red' in ev.get('detail',''):
-                    key=f"{fid}_red_{ev['time']['elapsed']}_{ev['player'].get('id')}"
-                    if key not in posted:
-                        try:
-                            post_tweet(format_red(home,away,sh,sa,ev['player'].get('name'),ev['time']['elapsed']))
-                            posted[key]=True
-                        except Exception as e: print(e)
+
+        # Score changed -> fetch details for scorer
+        if curr_score!=prev_score or f["started"]:
+            print(f"Score {prev_score} -> {curr_score}, fetching matchDetails for {fid}...")
+            try:
+                dr=requests.get(f"https://www.fotmob.com/api/matchDetails?matchId={fid}",headers=headers,timeout=20)
+                det=dr.json()
+                # FotMob goals are in content -> matchFacts -> events or header -> events
+                events=[]
+                try:
+                    # new structure
+                    mf=det.get("content",{}).get("matchFacts",{}).get("events",{}).get("events",[])
+                    events=mf
+                except: events=[]
+                # fallback header events
+                if not events:
+                    try:
+                        events=det.get("header",{}).get("events",{}).get("events",[]) or det.get("content",{}).get("events",{}).get("events",[])
+                    except: events=[]
+
+                for ev in events:
+                    ev_type=ev.get("type","") # Goal, Card
+                    if ev_type=="Goal":
+                        minute=ev.get("timeStr","").replace("'","") or ev.get("time",0)
+                        player=ev.get("playerName") or ev.get("name","Unknown")
+                        # FotMob doesn't always give assist in this endpoint, but try
+                        assist=None
+                        if "assist" in str(ev).lower():
+                            assist=ev.get("assistStr") or ev.get("assist")
+                        key=f"{fid}_{minute}_{player}_goal"
+                        if key not in posted:
+                            try:
+                                post_tweet(format_goal(home,away,sh,sa,player,minute,assist))
+                                posted[key]=True
+                            except Exception as e: print(e)
+                    if "Card" in ev_type or ev.get("card")=="Red" or "Red" in str(ev.get("type","")):
+                        # FotMob red card
+                        if ev.get("card")=="Red" or "red" in str(ev).lower():
+                            minute=ev.get("timeStr","").replace("'","") or ev.get("time",0)
+                            player=ev.get("playerName","Unknown")
+                            key=f"{fid}_red_{minute}_{player}"
+                            if key not in posted:
+                                try:
+                                    post_tweet(format_red(home,away,sh,sa,player,minute))
+                                    posted[key]=True
+                                except Exception as e: print(e)
+            except Exception as e:
+                print(f"Details failed for {fid}: {e}")
+
             posted[f"{fid}_score"]=curr_score
+
         save_state(posted)
-    print("Done")
+    print("Done - FotMob")
 
 if __name__=="__main__":
     main()
